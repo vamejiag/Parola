@@ -218,8 +218,12 @@ nav.tabs button[aria-selected="true"]::before{content:"";position:absolute;top:0
         <input id="key" type="password" autocomplete="off" spellcheck="false" placeholder="Paste your key">
       </label>
       <label class="field"><span>Model</span>
-        <input id="model" type="text" autocomplete="off" spellcheck="false">
-        <small>You can type any model name your provider offers.</small>
+        <div style="display:flex;gap:8px">
+          <input id="model" type="text" autocomplete="off" spellcheck="false" list="modelList" style="flex:1;min-width:0">
+          <button class="btn ghost" id="findModels" type="button">Find models</button>
+        </div>
+        <datalist id="modelList"></datalist>
+        <small id="modelHelp">Tap Find models to see the exact names your key can use, then pick one.</small>
       </label>
       <label class="field" id="baseWrap" hidden><span>Base URL</span>
         <input id="base" type="url" autocomplete="off" spellcheck="false" placeholder="http://localhost:11434/v1">
@@ -305,7 +309,7 @@ nav.tabs button[aria-selected="true"]::before{content:"";position:absolute;top:0
 
   /* ---------- AI providers ---------- */
   const PROVIDERS = {
-    gemini:     { model: "gemini-2.5-flash", help: 'Free key at <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">Google AI Studio</a>. Newer free models are listed there too.' },
+    gemini:     { model: "gemini-3-flash-preview", help: 'Free key at <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">Google AI Studio</a>. Newer free models are listed there too.' },
     groq:       { model: "llama-3.3-70b-versatile", base: "https://api.groq.com/openai/v1", help: 'Free key at <a href="https://console.groq.com/keys" target="_blank" rel="noopener">console.groq.com</a>.' },
     openrouter: { model: "google/gemini-2.5-flash", base: "https://openrouter.ai/api/v1", help: 'Key at <a href="https://openrouter.ai/keys" target="_blank" rel="noopener">openrouter.ai</a>. Models ending in ":free" cost nothing.' },
     openai:     { model: "gpt-4o-mini", base: "https://api.openai.com/v1", help: 'Paid key at <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener">platform.openai.com</a>.' },
@@ -315,17 +319,24 @@ nav.tabs button[aria-selected="true"]::before{content:"";position:absolute;top:0
   const SET = "parola-settings-v1";
   let settings = (() => { try { return JSON.parse(localStorage.getItem(SET) || "null"); } catch { return null; } })() || { provider: "gemini", key: "", model: "", base: "" };
 
-  function extractJSON(text) {
+  function unwrap(v, needKey) {
+    if (Array.isArray(v) && v.length && typeof v[0] === "object") v = v[0];
+    if (needKey && v && typeof v === "object" && !(needKey in v)) {
+      const inner = Object.values(v).find(x => x && typeof x === "object" && !Array.isArray(x) && needKey in x);
+      if (inner) v = inner;
+    }
+    return v;
+  }
+  function extractJSON(text, needKey) {
     const t = String(text || "").trim();
-    try { return JSON.parse(t); } catch {}
-    const fence = t.match(/```(?:json)?\s*([\s\S]*?)```/);
-    if (fence) { try { return JSON.parse(fence[1]); } catch {} }
-    const a = t.indexOf("{"), b = t.lastIndexOf("}");
-    if (a >= 0 && b > a) { try { return JSON.parse(t.slice(a, b + 1)); } catch {} }
-    throw { code: "invalid_json" };
+    const tries = [t];
+    const fence = t.match(/```(?:json)?\s*([\s\S]*?)```/); if (fence) tries.push(fence[1]);
+    const a = t.indexOf("{"), b = t.lastIndexOf("}"); if (a >= 0 && b > a) tries.push(t.slice(a, b + 1));
+    for (const x of tries) { try { const v = unwrap(JSON.parse(x), needKey); if (!needKey || (v && needKey in v)) return v; } catch {} }
+    throw { code: "invalid_json", raw: t };
   }
 
-  async function ask(prompt, signal) {
+  async function ask(prompt, signal, opts = {}) {
     const cfg = { ...PROVIDERS[settings.provider], ...settings };
     const model = settings.model || PROVIDERS[settings.provider].model;
     if (!settings.key && settings.provider !== "custom") throw { code: "no_key" };
@@ -335,11 +346,13 @@ nav.tabs button[aria-selected="true"]::before{content:"";position:absolute;top:0
         res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
           method: "POST", signal,
           headers: { "Content-Type": "application/json", "x-goog-api-key": settings.key },
-          body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: prompt }] }], generationConfig: { responseMimeType: "application/json", temperature: 0.3 } })
+          body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: prompt }] }], generationConfig: Object.assign({ responseMimeType: "application/json", temperature: 0.3, maxOutputTokens: 8192 }, opts.schema ? { responseSchema: opts.schema } : {}) })
         });
         const j = await res.json().catch(() => ({}));
         if (!res.ok) throw { code: res.status, message: j?.error?.message };
-        text = (j.candidates?.[0]?.content?.parts || []).map(p => p.text || "").join("");
+        const cand = j.candidates?.[0];
+        text = (cand?.content?.parts || []).filter(p => !p.thought).map(p => p.text || "").join("");
+        if (!text) throw { code: "empty", message: cand?.finishReason || j.promptFeedback?.blockReason || "no text" };
       } else if (settings.provider === "anthropic") {
         res = await fetch("https://api.anthropic.com/v1/messages", {
           method: "POST", signal,
@@ -356,7 +369,8 @@ nav.tabs button[aria-selected="true"]::before{content:"";position:absolute;top:0
         if (settings.provider === "openrouter") { headers["HTTP-Referer"] = location.origin; headers["X-Title"] = "Parola"; }
         res = await fetch(`${base}/chat/completions`, {
           method: "POST", signal, headers,
-          body: JSON.stringify({ model, temperature: 0.3, messages: [{ role: "user", content: prompt }] })
+          body: JSON.stringify(Object.assign({ model, temperature: 0.3, messages: [{ role: "user", content: prompt }] },
+            (settings.provider === "openai" || settings.provider === "groq") ? { response_format: { type: "json_object" } } : {}))
         });
         const j = await res.json().catch(() => ({}));
         if (!res.ok) throw { code: res.status, message: j?.error?.message };
@@ -367,7 +381,7 @@ nav.tabs button[aria-selected="true"]::before{content:"";position:absolute;top:0
       if (e?.code) throw e;
       throw { code: "network" };
     }
-    return extractJSON(text);
+    return extractJSON(text, opts.needKey);
   }
 
   // cache lookups for a day to save your quota
@@ -381,6 +395,7 @@ nav.tabs button[aria-selected="true"]::before{content:"";position:absolute;top:0
     if (e?.code === 404) return "The provider doesn't recognise that model name. Change it in Settings.";
     if (e?.code === 429) return "You've reached your provider's limit for now. Wait a minute (or until tomorrow for daily limits) and try again.";
     if (e?.code === "invalid_json") return `The ${what} came back in an unexpected shape. Try again, or pick a stronger model in Settings.`;
+    if (e?.code === "empty") return `The AI sent back an empty answer (${e.message}). Try again, or pick another model in Settings.`;
     if (e?.code === "network") return "Couldn't reach the provider. Check your connection (and the base URL, for custom servers).";
     return `The ${what} didn't finish${e?.message ? ": " + e.message : "."}`;
   }
@@ -389,6 +404,23 @@ nav.tabs button[aria-selected="true"]::before{content:"";position:absolute;top:0
     $("#tries").append(el("button", { class: "chip", type: "button", onclick: () => { $("#q").value = w; lookup(w); } }, w)));
 
   $("#form").addEventListener("submit", e => { e.preventDefault(); const w = $("#q").value.trim(); if (w) lookup(w); });
+
+  const S = t => ({ type: t });
+  const PAIR = { type: "ARRAY", items: { type: "OBJECT", properties: { it: S("STRING"), es: S("STRING") }, required: ["it", "es"] } };
+  const LOOK_SCHEMA = { type: "OBJECT", properties: {
+    word: S("STRING"), pos: S("STRING"), plural_or_forms: S("STRING"), register: S("STRING"),
+    definition_it: S("STRING"), definition_es: S("STRING"),
+    translations: { type: "OBJECT", properties: { es: S("STRING"), en: S("STRING"), fr: S("STRING") }, required: ["es", "en", "fr"] },
+    synonyms: { type: "ARRAY", items: S("STRING") }, antonyms: { type: "ARRAY", items: S("STRING") },
+    examples: PAIR, idioms: PAIR, false_friend: S("STRING"), tip: S("STRING") },
+    required: ["word", "pos", "definition_it", "translations", "synonyms", "examples"] };
+  const CORR_SCHEMA = { type: "OBJECT", properties: {
+    marked: S("STRING"),
+    notes: { type: "ARRAY", items: { type: "OBJECT", properties: { kind: S("STRING"), wrong: S("STRING"), right: S("STRING"), why: S("STRING") }, required: ["kind", "wrong", "right", "why"] } },
+    praise: S("STRING") }, required: ["marked", "notes"] };
+
+  const rawBox = e => e?.raw ? el("details", { style: "margin-top:10px;font-size:.85rem;color:var(--ink-soft)" },
+    el("summary", {}, "Show what the AI replied"), el("pre", { style: "white-space:pre-wrap;overflow-x:auto" }, String(e.raw).slice(0, 3000))) : null;
 
   const PROMPT = w => `You are an Italian dictionary for a native Spanish speaker who also knows English and French.
 The user typed: "${w.replace(/"/g, "'")}"
@@ -418,14 +450,14 @@ Give 3 examples and up to 3 idioms (empty array if none are genuinely common). B
     out.append(status);
     try {
       const ck = "look:" + w.toLowerCase();
-      const data = cacheGet(ck) || await ask(PROMPT(w), ctl.signal);
-      if (!data || typeof data.word !== "string") throw { code: "invalid_json" };
+      const data = cacheGet(ck) || await ask(PROMPT(w), ctl.signal, { schema: LOOK_SCHEMA, needKey: "word" });
+      if (!data || typeof data.word !== "string") throw { code: "invalid_json", raw: JSON.stringify(data) };
       cachePut(ck, data);
       current = normalize(data);
       renderEntry(current);
     } catch (e) {
       if (e?.code === "cancelled") return;
-      out.replaceChildren(el("p", { class: "status err" }, errMsg(e, "lookup") + " Meanwhile, you can open it here:"), extLinks(w, looksVerb({ word: w })));
+      out.replaceChildren(el("p", { class: "status err" }, errMsg(e, "lookup") + " Meanwhile, you can open it here:"), extLinks(w, looksVerb({ word: w })), rawBox(e));
     } finally { $("#go").disabled = false; }
   }
 
@@ -564,7 +596,7 @@ One note per correction, in the order they appear. If the text has no mistakes, 
     $("#check").disabled = true;
     out.replaceChildren(el("p", { class: "status" }, "Your teacher is reading…"));
     try {
-      const d = await ask(TEACHER(t), cctl.signal);
+      const d = await ask(TEACHER(t), cctl.signal, { schema: CORR_SCHEMA, needKey: "marked" });
       const notes = Array.isArray(d?.notes) ? d.notes.filter(n => n && n.wrong) : [];
       const card = el("article", { class: "entry" },
         el("div", { class: "head" }, el("h2", { class: "word", style: "font-size:2rem" }, notes.length ? `${notes.length} correction${notes.length === 1 ? "" : "s"}` : "Perfetto!")),
@@ -578,7 +610,7 @@ One note per correction, in the order they appear. If the text has no mistakes, 
       out.replaceChildren(card);
     } catch (e) {
       if (e?.code === "cancelled") return;
-      out.replaceChildren(el("p", { class: "status err" }, errMsg(e, "correction")));
+      out.replaceChildren(el("p", { class: "status err" }, errMsg(e, "correction")), rawBox(e));
     } finally { $("#check").disabled = false; }
   });
 
@@ -708,11 +740,41 @@ One note per correction, in the order they appear. If the text has no mistakes, 
     const prev = settings; settings = readForm();
     const out = $("#testOut"); out.className = "grow"; out.textContent = "Testing…";
     try {
-      const r = await ask('Reply with only this JSON: {"ok":true}');
+      const r = await ask('Reply with only this JSON: {"ok":true}', undefined, { needKey: "ok" });
       out.textContent = r?.ok ? "Connected ✓" : "Connected, but the reply looked odd.";
       out.classList.add("ok");
     } catch (e) { out.textContent = errMsg(e, "test"); out.classList.add("err"); }
     finally { settings = prev; }
+  });
+
+  async function listModels(cfg) {
+    let url, headers = {};
+    if (cfg.provider === "gemini") { url = "https://generativelanguage.googleapis.com/v1beta/models?pageSize=200"; headers["x-goog-api-key"] = cfg.key; }
+    else if (cfg.provider === "anthropic") { url = "https://api.anthropic.com/v1/models?limit=100"; headers = { "x-api-key": cfg.key, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" }; }
+    else {
+      const base = (cfg.provider === "custom" ? (cfg.base || PROVIDERS.custom.base) : PROVIDERS[cfg.provider].base).replace(/\/$/, "");
+      url = base + "/models"; if (cfg.key) headers.Authorization = `Bearer ${cfg.key}`;
+    }
+    let res;
+    try { res = await fetch(url, { headers }); } catch { throw { code: "network" }; }
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok) throw { code: res.status, message: j?.error?.message };
+    if (cfg.provider === "gemini")
+      return (j.models || []).filter(m => (m.supportedGenerationMethods || []).includes("generateContent"))
+        .map(m => ({ id: m.name.replace(/^models\//, ""), label: m.displayName || "" }))
+        .filter(m => !/embed|tts|image|audio|live|veo|imagen|aqa/i.test(m.id));
+    return (j.data || []).map(m => ({ id: m.id, label: m.display_name || m.name || "" }));
+  }
+  $("#findModels").addEventListener("click", async () => {
+    const cfg = readForm(), help = $("#modelHelp");
+    if (!cfg.key && cfg.provider !== "custom") { help.textContent = "Paste your API key first."; return; }
+    help.textContent = "Asking your provider…";
+    try {
+      const ms = await listModels(cfg);
+      const dl = $("#modelList"); dl.replaceChildren(...ms.map(m => el("option", { value: m.id }, m.label)));
+      help.textContent = ms.length ? `Found ${ms.length} models. Tap the Model field to pick one, then Test.` : "No models found for this key.";
+      if (ms.length && !ms.some(m => m.id === $("#model").value)) { const flash = ms.find(m => /flash/i.test(m.id) && !/lite/i.test(m.id)) || ms[0]; $("#model").value = flash.id; }
+    } catch (e) { help.textContent = errMsg(e, "model list"); }
   });
 
   /* ---------- export / import ---------- */
