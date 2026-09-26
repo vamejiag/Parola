@@ -133,7 +133,8 @@
   const TOK = "parola-tokens-v1";
   const today = () => new Date().toISOString().slice(0, 10);
   function tokenDay() { try { const t = JSON.parse(localStorage.getItem(TOK) || "null"); return t && t.date === today() ? t : { date: today(), total: 0, calls: 0 }; } catch { return { date: today(), total: 0, calls: 0 }; } }
-  function addTokens(n) { if (!n) return; const t = tokenDay(); t.total += n; t.calls += 1; try { localStorage.setItem(TOK, JSON.stringify(t)); } catch {} }
+  function addTokens(n) { if (!n) return; const t = tokenDay(); t.total += n; t.calls += 1; try { localStorage.setItem(TOK, JSON.stringify(t)); } catch {} showTokens(); }
+  function showTokens() { const t = tokenDay(); $("#tokens").textContent = t.total ? `${fmt(t.total)} tokens today` : ""; }
   const fmt = n => (n || 0).toLocaleString();
   function rawPanel(run) {
     if (!run) return null;
@@ -535,5 +536,6 @@
   if (!settings.key && settings.provider !== "custom") setTimeout(() => toast("Add your API key in Settings to start"), 600);
   if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
 
+  showTokens();
   refreshAll();
 })();
