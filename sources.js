@@ -10,6 +10,7 @@
 
 const stripHTML = html => {
   const d = new DOMParser().parseFromString(String(html || ""), "text/html");
+  d.querySelectorAll("style, script, link, sup.reference").forEach(n => n.remove());
   return (d.body.textContent || "").replace(/\s+/g, " ").trim();
 };
 
@@ -155,14 +156,27 @@ async function wikizionario(word, signal) {
     }
     return parsed ? { status: "ok", data: parsed, via: "wikitext" } : { status: "none", note: "page found, no Italian entry" };
   };
-  let r = await tryWord(word.trim());
-  if (r.status !== "ok" && word.trim() !== word.trim().toLowerCase()) r = await tryWord(word.trim().toLowerCase());
+  const w = word.trim();
+  let r = await tryWord(w);
+  if (r.status !== "ok" && w !== w.toLowerCase()) r = await tryWord(w.toLowerCase());
+  // reflexive verbs (sbrigarsi, accorgersi, pentirsi...) usually live under the base verb
+  const base = baseVerb(w.toLowerCase());
+  if (r.status !== "ok" && base) { const b = await tryWord(base); if (b.status === "ok") r = { ...b, base }; }
   return r;
+}
+
+// sbrigarsi -> sbrigare, accorgersi -> accorgere, pentirsi -> pentire, tradursi -> tradurre, porsi -> porre
+function baseVerb(w) {
+  const m = w.match(/^(.+?)(ar|er|ir|ur|or)(si|mi|ti|ci|vi|sene|sela)$/);
+  if (!m || /\s/.test(w)) return null;
+  const tail = { ar: "are", er: "ere", ir: "ire", ur: "urre", or: "orre" }[m[2]];
+  return m[1] + tail;
 }
 
 const WZ_POS_HTML = /^(sostantivo|verbo|aggettivo|avverbio|interiezione|preposizione|congiunzione|pronome|articolo|locuzione|espressione|forma)/i;
 function parseWikizionarioHTML(html) {
   const doc = new DOMParser().parseFromString(String(html || ""), "text/html");
+  doc.querySelectorAll("style, script").forEach(n => n.remove());
   const root = doc.querySelector(".mw-parser-output") || doc.body;
   const out = { sections: [], synonyms: [], antonyms: [], trad: { es: "", en: "", fr: "" } };
   const headingOf = n => {
@@ -185,7 +199,7 @@ function parseWikizionarioHTML(html) {
         if (li.tagName !== "LI") continue;
         const c = li.cloneNode(true);
         const examples = [...c.querySelectorAll("dl, ul")].map(x => x.textContent.replace(/\s+/g, " ").trim()).filter(Boolean);
-        c.querySelectorAll("dl, ul, sup").forEach(x => x.remove());
+        c.querySelectorAll("dl, ul, sup, style, script").forEach(x => x.remove());
         const text = c.textContent.replace(/\s+/g, " ").trim();
         if (text) cur.defs.push({ text, examples: examples.slice(0, 2) });
       }

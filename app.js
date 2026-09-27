@@ -229,7 +229,7 @@
         const t = await mymemory(w, "es|it", signal, settings.mmEmail);
         w = t.main.replace(/[.!?¡¿]/g, "").trim().toLowerCase() || w;
       }
-      const ck = "free3:" + w.toLowerCase();
+      const ck = "free4:" + w.toLowerCase();
       let d = cacheGet(ck);
       if (!d) {
         const [wz, wk, es, en, fr] = await Promise.all([
@@ -240,8 +240,8 @@
           mymemory(w, "it|fr", signal, settings.mmEmail).catch(() => ({ main: "" }))
         ]);
         const wkList = Array.isArray(wk) ? wk : [];
-        d = { word: w, wz: wz.data || null, wk: wkList, es, en: en.main, fr: fr.main,
-          status: { wz: wz.status === "ok" ? `found (${wz.via})` : wz.status === "none" ? (wz.note || "no entry") : `error: ${wz.note}`,
+        d = { word: w, wz: wz.data || null, wzBase: wz.base || "", wk: wkList, es, en: en.main, fr: fr.main,
+          status: { wz: wz.status === "ok" ? `found (${wz.via}${wz.base ? ", as " + wz.base : ""})` : wz.status === "none" ? (wz.note || "no entry") : `error: ${wz.note}`,
                     wk: wk?.error ? `error: ${wk.error}` : wkList.length ? "found" : "no entry",
                     mm: es.main ? "ok" : "no result" } };
         cachePut(ck, d);
@@ -266,12 +266,27 @@
 
   // Best translation per language: human-made (Wikizionario) first, then machine (MyMemory).
   // A machine "translation" identical to the word itself means it wasn't found.
+  // "Mueva el trasero., Mueva el trasero, Dese prisa" -> "mueva el trasero, dese prisa"
+  function tidyList(items, word) {
+    const seen = new Set(), out = [];
+    const lowerFirst = word && word[0] === word[0].toLowerCase();
+    for (let t of items) {
+      t = String(t || "").replace(/\s+/g, " ").trim().replace(/^[¡¿"'«]+|[.!?;:,"'»]+$/g, "").trim();
+      if (!t) continue;
+      if (lowerFirst && /^[A-ZÁÉÍÓÚÑÀÈÌÒÙÇ][a-záéíóúñàèìòùç]/.test(t)) t = t[0].toLowerCase() + t.slice(1);
+      const key = t.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+      if (key === word.toLowerCase() || seen.has(key)) continue;
+      seen.add(key); out.push(t);
+      if (out.length >= 3) break;
+    }
+    return out.join(", ");
+  }
   function bestTranslations(d) {
     const echo = t => !t || t.toLowerCase() === d.word.toLowerCase();
     const res = {};
     for (const lang of ["es", "en", "fr"]) {
       const human = d.wz?.trad?.[lang] || "";
-      let machine = lang === "es" ? [d.es.main, ...(d.es.alternatives || [])].filter(t => !echo(t)).join(", ") : (echo(d[lang]) ? "" : d[lang]);
+      let machine = tidyList(lang === "es" ? [d.es.main, ...(d.es.alternatives || [])] : [d[lang]], d.word);
       res[lang] = human ? { text: human, mt: false } : machine ? { text: machine, mt: true } : { text: "", mt: false };
     }
     return res;
@@ -319,7 +334,10 @@
           el("h2", { class: "word" }, d.word),
           el("div", { class: "meta" }, typed.toLowerCase() !== d.word.toLowerCase() ? `From “${typed}”. ` : "", entry.pos)),
         el("button", { class: saved ? "btn ghost" : "btn lemon", type: "button", onclick: () => saved ? unsave(k) : save(entry) }, saved ? "Saved ✓" : "Save")),
-      wzSecs.length ? el("div", { class: "sec" }, el("h3", {}, "Definizione (italiano)"), defBlock(wzSecs)) : null,
+      wzSecs.length ? el("div", { class: "sec" }, el("h3", {}, "Definizione (italiano)"),
+        d.wzBase ? el("p", { class: "meta", style: "margin:0 0 8px" }, `From the base verb `, el("button", { class: "link", type: "button", onclick: () => lookup(d.wzBase) }, d.wzBase),
+          `. Reflexive forms like ${d.word} are usually listed under it.`) : null,
+        defBlock(wzSecs)) : null,
       el("div", { class: "sec" }, el("h3", {}, "Translations"),
         el("div", { class: "tr" }, el("b", {}, "ES"), trCell(tr.es), el("b", {}, "EN"), trCell(tr.en), el("b", {}, "FR"), trCell(tr.fr))),
       entry.synonyms.length ? el("div", { class: "sec" }, el("h3", {}, "Sinonimi"), wordLinks(entry.synonyms)) : null,

@@ -1,6 +1,6 @@
 // Parola service worker: makes the app installable and opens it offline.
 // AI requests are never cached here (the app caches lookups itself).
-const CACHE = "parola-free-v6";
+const CACHE = "parola-free-v7";
 const SHELL = ["./", "index.html", "style.css", "config.js", "prompts.js", "sources.js", "words.js", "app.js", "manifest.webmanifest", "icon.svg", "icon-192.png", "icon-512.png"];
 
 self.addEventListener("install", e => {
