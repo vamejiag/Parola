@@ -34,6 +34,8 @@
     $("#view-saved").hidden = tab !== "saved";
     $("#view-correct").hidden = tab !== "correct";
     $("#view-settings").hidden = true;
+    $("#view-today").hidden = tab !== "today";
+    if (tab === "today") renderToday();
     $("#view-practice").hidden = tab !== "practice";
     if (tab === "saved") renderList();
     if (tab === "practice") startDeck();
@@ -44,7 +46,8 @@
     const n = Object.keys(words).length;
     $("#count").textContent = n ? `${n} saved` : "";
     if (tab === "saved") renderList();
-    if (current) renderEntry(current);
+    if (current && current.source !== "free") renderEntry(current);
+    else if (current && lastFree) renderFree(lastFree.d, lastFree.typed, lastFree.target);
   }
 
   /* ---------- lookup ---------- */
@@ -177,7 +180,7 @@
   const rawBox = e => e?.raw ? rawPanel({ raw: e.raw, usage: e.usage || {}, model: settings.model, cached: false }) : null;
 
 
-  async function lookup(w) {
+  async function aiLookup(w) {
     const out = $("#out");
     out.replaceChildren();
     ctl?.abort(); ctl = new AbortController();
@@ -205,6 +208,127 @@
     } finally { $("#go").disabled = false; }
   }
 
+  /* ---------- free lookup (no AI) ---------- */
+  let inputLang = "it";
+  document.querySelectorAll("[data-lang]").forEach(b => b.addEventListener("click", () => {
+    inputLang = b.dataset.lang;
+    document.querySelectorAll("[data-lang]").forEach(x => x.setAttribute("aria-pressed", x === b));
+    $("#q").placeholder = inputLang === "it" ? "Type an Italian word or phrase…" : "Type a Spanish word…";
+  }));
+
+  const ctls = {};
+  async function lookup(input, target = "#out") {
+    const out = $(target);
+    ctls[target]?.abort(); ctls[target] = new AbortController();
+    const signal = ctls[target].signal;
+    if (target === "#out") $("#go").disabled = true;
+    out.replaceChildren(el("p", { class: "status" }, "Looking it up…"));
+    try {
+      let w = input.trim();
+      if (inputLang === "es") {
+        const t = await mymemory(w, "es|it", signal, settings.mmEmail);
+        w = t.main.replace(/[.!?¡¿]/g, "").trim().toLowerCase() || w;
+      }
+      const ck = "free2:" + w.toLowerCase();
+      let d = cacheGet(ck);
+      if (!d) {
+        const [wz, wk, es, en, fr] = await Promise.all([
+          wikizionario(w, signal).catch(() => null),
+          wiktionary(w, signal).catch(() => []),
+          mymemory(w, "it|es", signal, settings.mmEmail),
+          mymemory(w, "it|en", signal, settings.mmEmail).catch(() => ({ main: "" })),
+          mymemory(w, "it|fr", signal, settings.mmEmail).catch(() => ({ main: "" }))
+        ]);
+        d = { word: w, wz, wk, es, en: en.main, fr: fr.main };
+        cachePut(ck, d);
+      }
+      renderFree(d, input.trim(), target);
+    } catch (e) {
+      if (e?.name === "AbortError" || e?.code === "cancelled") return;
+      const msg = e?.code === "quota"
+        ? "You've used today's free translations. Add an email in Settings for 10× more, or try again tomorrow."
+        : "Couldn't reach the free dictionaries. Check your connection and try again.";
+      out.replaceChildren(el("p", { class: "status err" }, msg), extLinks(input, looksVerb({ word: input })), aiButton(input, true));
+    } finally { if (target === "#out") $("#go").disabled = false; }
+  }
+
+  function aiButton(w, strong) {
+    return el("div", { class: "sec" },
+      el("p", { class: "meta", style: "margin:0 0 8px" }, strong
+        ? "Not found in the free dictionaries? Ask the AI (uses your API key)."
+        : "Want idioms, register and tailored examples? Ask the AI (uses your API key)."),
+      el("button", { class: strong ? "btn lemon" : "btn ghost", type: "button", onclick: () => aiLookup(w) }, "Ask AI"));
+  }
+
+  // Best translation per language: human-made (Wikizionario) first, then machine (MyMemory).
+  // A machine "translation" identical to the word itself means it wasn't found.
+  function bestTranslations(d) {
+    const echo = t => !t || t.toLowerCase() === d.word.toLowerCase();
+    const res = {};
+    for (const lang of ["es", "en", "fr"]) {
+      const human = d.wz?.trad?.[lang] || "";
+      let machine = lang === "es" ? [d.es.main, ...(d.es.alternatives || [])].filter(t => !echo(t)).join(", ") : (echo(d[lang]) ? "" : d[lang]);
+      res[lang] = human ? { text: human, mt: false } : machine ? { text: machine, mt: true } : { text: "", mt: false };
+    }
+    return res;
+  }
+
+  function toEntry(d) {
+    const tr = bestTranslations(d);
+    const wzDefs = (d.wz?.sections || []).flatMap(s => s.defs);
+    const ex = [];
+    wzDefs.forEach(x => x.examples.forEach(e => ex.push({ it: e, es: "" })));
+    d.wk.forEach(s => s.defs.forEach(x => x.examples.forEach(e => ex.push({ it: e.it, es: e.tr }))));
+    (d.es.context || []).forEach(c => ex.push({ it: c.it, es: c.tr }));
+    const pos = (d.wz?.sections?.length ? d.wz.sections : d.wk).map(s => s.pos);
+    return {
+      word: d.word, pos: [...new Set(pos)].join(", "), forms: "", register: "",
+      definition_it: wzDefs.slice(0, 2).map(x => x.text).join("; "), definition_es: "",
+      definition_en: d.wk[0] ? d.wk[0].defs.slice(0, 2).map(x => x.text).join("; ") : "",
+      translations: { es: tr.es.text, en: tr.en.text, fr: tr.fr.text },
+      synonyms: d.wz?.synonyms || [], antonyms: d.wz?.antonyms || [], examples: ex.slice(0, 4), idioms: [], tip: "", source: "free"
+    };
+  }
+
+  const defBlock = (sections, withTr) => sections.map(s => el("div", { style: "margin-bottom:12px" },
+    el("div", { class: "meta", style: "margin:0 0 4px;font-weight:600" }, s.pos),
+    s.defs.map((x, i) => el("div", { style: "margin-bottom:8px" },
+      el("div", {}, `${i + 1}. ${x.text}`),
+      x.examples.map(e => typeof e === "string"
+        ? el("div", { class: "ex", style: "margin-top:6px" }, el("div", { class: "it" }, e))
+        : el("div", { class: "ex", style: "margin-top:6px" }, el("div", { class: "it" }, e.it), e.tr ? el("div", { class: "es" }, e.tr) : null))))));
+
+  let lastFree = null;
+  function renderFree(d, typed, target = "#out") {
+    lastFree = { d, typed, target };
+    const wzSecs = d.wz?.sections || [];
+    const found = wzSecs.length > 0 || d.wk.length > 0;
+    const tr = bestTranslations(d);
+    const entry = toEntry(d);
+    current = entry; currentRun = null;
+    const k = keyOf(d.word), saved = !!words[k];
+    const isVerb = [...wzSecs, ...d.wk].some(s => /\bverb/i.test(s.pos)) || looksVerb({ word: d.word });
+    const trCell = t => t.text ? el("span", {}, t.text, t.mt ? el("span", { class: "meta", style: "font-size:.8rem" }, " (machine)") : null) : el("span", { class: "meta" }, "not found");
+    const card = el("article", { class: "entry" },
+      el("div", { class: "head" },
+        el("div", {},
+          el("h2", { class: "word" }, d.word),
+          el("div", { class: "meta" }, typed.toLowerCase() !== d.word.toLowerCase() ? `From “${typed}”. ` : "", entry.pos)),
+        el("button", { class: saved ? "btn ghost" : "btn lemon", type: "button", onclick: () => saved ? unsave(k) : save(entry) }, saved ? "Saved ✓" : "Save")),
+      wzSecs.length ? el("div", { class: "sec" }, el("h3", {}, "Definizione (italiano)"), defBlock(wzSecs)) : null,
+      el("div", { class: "sec" }, el("h3", {}, "Translations"),
+        el("div", { class: "tr" }, el("b", {}, "ES"), trCell(tr.es), el("b", {}, "EN"), trCell(tr.en), el("b", {}, "FR"), trCell(tr.fr))),
+      entry.synonyms.length ? el("div", { class: "sec" }, el("h3", {}, "Sinonimi"), wordLinks(entry.synonyms)) : null,
+      entry.antonyms.length ? el("div", { class: "sec" }, el("h3", {}, "Contrari"), wordLinks(entry.antonyms)) : null,
+      d.wk.length ? el("div", { class: "sec" }, el("h3", {}, wzSecs.length ? "Definition (English)" : "Definition (English; no Italian entry found)"), defBlock(d.wk)) : null,
+      d.es.context?.length ? el("div", { class: "sec" }, el("h3", {}, "In context"),
+        d.es.context.map(c => el("div", { class: "ex" }, el("div", { class: "it" }, c.it), el("div", { class: "es" }, c.tr)))) : null,
+      el("div", { class: "sec" }, el("h3", {}, "More context"), extLinks(d.word, isVerb)),
+      aiButton(d.word, !found || !tr.es.text),
+      el("p", { class: "hint", style: "margin-top:16px" }, "Sources: Wikizionario and Wiktionary (CC BY-SA), MyMemory. No AI tokens used."));
+    $(target).replaceChildren(card);
+  }
+
   function normalize(d) {
     const arr = a => Array.isArray(a) ? a : [];
     const s = v => typeof v === "string" ? v : "";
@@ -220,18 +344,10 @@
   }
 
   function extLinks(word, isVerb) {
-    const w = encodeURIComponent(word.trim().toLowerCase());
-    const links = [
-      ["WordReference", `https://www.wordreference.com/ites/${w}`],
-      ["Reverso Context", `https://context.reverso.net/traduccion/italiano-espanol/${w}`]
-    ];
-    if (isVerb) links.push(
-      ["Conjugation (WordReference)", `https://www.wordreference.com/conj/itverbs.aspx?v=${w}`],
-      ["Conjugation (Reverso)", `https://conjugator.reverso.net/conjugation-italian-verb-${w}.html`]
-    );
+    const links = dictionaryLinks(word, isVerb);
     return el("div", { class: "ext" }, links.map(([t, u]) => el("a", { href: u, target: "_blank", rel: "noopener noreferrer" }, t)));
   }
-  const looksVerb = d => /verb/i.test(d.pos || "") || /(are|ere|ire|rsi|rre)$/.test((d.word || "").trim());
+  const looksVerb = d => /\bverb/i.test(d.pos || "") || /(are|ere|ire|rsi|rre)$/.test((d.word || "").trim());
 
   function wordLinks(list) {
     const p = el("p", { style: "margin:0" });
@@ -245,7 +361,7 @@
   function entryBody(d) {
     const frag = document.createDocumentFragment();
     frag.append(
-      el("p", { class: "def" }, d.definition_it),
+      el("p", { class: "def" }, d.definition_it || d.definition_en || ""),
       d.definition_es ? el("p", { class: "def-es" }, d.definition_es) : null,
       el("div", { class: "sec" }, el("h3", {}, "Translations"),
         el("div", { class: "tr" },
@@ -259,7 +375,7 @@
       d.idioms.length ? el("div", { class: "sec" }, el("h3", {}, "Common expressions"),
         d.idioms.map(x => el("div", { class: "idiom" }, el("div", { class: "it" }, x.it), el("div", { class: "es" }, x.es)))) : null,
       d.tip ? el("div", { class: "sec" }, el("h3", {}, "Tip"), el("p", { style: "margin:0" }, d.tip)) : null,
-      el("div", { class: "sec" }, el("h3", {}, "More context"), extLinks(d.word, /verb/i.test(d.pos || "")))
+      el("div", { class: "sec" }, el("h3", {}, "More context"), extLinks(d.word, /\bverb/i.test(d.pos || "")))
     );
     return frag;
   }
@@ -290,6 +406,52 @@
     delete words[k]; refreshAll(); toast("Removed");
     try { await store.remove(k); } catch {}
   }
+
+  /* ---------- word of the day ---------- */
+  const DAILY = [...new Set(DAILY_WORDS)];
+  const dayNumber = (date = new Date()) => Math.floor((Date.UTC(date.getFullYear(), date.getMonth(), date.getDate())) / 86400000);
+  const wordForDay = n => DAILY[((n * 7919) % DAILY.length + DAILY.length) % DAILY.length];
+  let todayShown = null;
+  const UPAG = "parola-upag-v1";
+  async function upagCached() {
+    const key = String(dayNumber());
+    try { const c = JSON.parse(localStorage.getItem(UPAG) || "null"); if (c && c.day === key) return c.hit; } catch {}
+    const hit = await upagToday();
+    try { localStorage.setItem(UPAG, JSON.stringify({ day: key, hit })); } catch {}
+    return hit;
+  }
+  function upagCredit(hit) {
+    const box = $("#todayUpag");
+    box.replaceChildren(hit
+      ? el("p", { class: "meta", style: "margin:0" }, "Today's word comes from ",
+          el("a", { href: "https://unaparolaalgiorno.it/", target: "_blank", rel: "noopener" }, "Una parola al giorno"),
+          " (CC BY-NC-SA). ", el("a", { href: hit.url, target: "_blank", rel: "noopener" }, "Read their full explanation ↗"))
+      : el("p", { class: "meta", style: "margin:0" }, "Also today: ",
+          el("a", { href: "https://unaparolaalgiorno.it/", target: "_blank", rel: "noopener" }, "the word on Una parola al giorno ↗")));
+  }
+  async function renderToday(force) {
+    const n = dayNumber();
+    let word = force || wordForDay(n);
+    if (!force) {
+      const hit = await upagCached();
+      upagCredit(hit);
+      if (hit) word = hit.word;
+    }
+    const label = new Date().toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long" });
+    $("#todayDate").textContent = force ? "Another word" : label;
+    const past = $("#todayPast");
+    past.replaceChildren(...[1, 2, 3, 4, 5, 6].map(i => el("button", { class: "chip", type: "button",
+      onclick: () => { todayShown = null; showDaily(wordForDay(n - i), `${i === 1 ? "Yesterday" : i + " days ago"}`); } }, wordForDay(n - i))));
+    if (todayShown === word) return;
+    todayShown = word;
+    lookup(word, "#todayOut");
+  }
+  function showDaily(word, label) { $("#todayDate").textContent = label; todayShown = word; lookup(word, "#todayOut"); window.scrollTo(0, 0); }
+  $("#todayAnother").addEventListener("click", () => {
+    let w; do { w = DAILY[Math.floor(Math.random() * DAILY.length)]; } while (w === todayShown && DAILY.length > 1);
+    showDaily(w, "Another word");
+  });
+  $("#todayBack").addEventListener("click", () => { todayShown = null; renderToday(); });
 
   /* ---------- homework corrector ---------- */
   const DRAFT = "parola-draft-v1";
@@ -380,9 +542,9 @@
   /* ---------- practice (simple spaced repetition) ---------- */
   const GAPS = [0, 1, 3, 7, 16]; // days until next review for each box
   let mode = "it", queue = [], idx = 0, revealed = false, done = 0;
-  document.querySelectorAll(".modes button").forEach(b => b.addEventListener("click", () => {
+  document.querySelectorAll("#view-practice .modes button").forEach(b => b.addEventListener("click", () => {
     mode = b.dataset.mode;
-    document.querySelectorAll(".modes button").forEach(x => x.setAttribute("aria-pressed", x === b));
+    document.querySelectorAll("#view-practice .modes button").forEach(x => x.setAttribute("aria-pressed", x === b));
     startDeck();
   }));
 
@@ -419,7 +581,7 @@
       const ex = w.examples?.[0];
       card.append(el("div", { class: "a" },
         el("div", { class: "main" }, mode === "it" ? (w.translations?.es || "") : w.word),
-        el("div", { class: "sub", style: "margin-top:4px" }, w.definition_it || ""),
+        el("div", { class: "sub", style: "margin-top:4px" }, w.definition_it || w.definition_en || ""),
         ex ? el("div", { class: "ex" }, el("div", { class: "it" }, ex.it), el("div", { class: "es" }, ex.es)) : null));
     }
     deck.append(card);
@@ -451,8 +613,9 @@
     $("#baseWrap").hidden = settings.provider !== "custom";
     $("#provHelp").innerHTML = PROVIDERS[settings.provider].help; // static, trusted text
     $("#testOut").textContent = "";
+    $("#mmEmail").value = settings.mmEmail || "";
   }
-  const readForm = () => ({ provider: $("#prov").value, key: $("#key").value.trim(), model: $("#model").value.trim(), base: $("#base").value.trim() });
+  const readForm = () => ({ provider: $("#prov").value, key: $("#key").value.trim(), model: $("#model").value.trim(), base: $("#base").value.trim(), mmEmail: $("#mmEmail").value.trim() });
   $("#prov").addEventListener("change", () => {
     const p = $("#prov").value;
     $("#model").value = PROVIDERS[p].model;
@@ -460,7 +623,7 @@
     $("#provHelp").innerHTML = PROVIDERS[p].help;
   });
   $("#gear").addEventListener("click", () => {
-    ["look", "correct", "saved", "practice"].forEach(v => $("#view-" + v).hidden = true);
+    ["look", "today", "correct", "saved", "practice"].forEach(v => $("#view-" + v).hidden = true);
     document.querySelectorAll("nav.tabs button").forEach(x => x.setAttribute("aria-selected", "false"));
     $("#view-settings").hidden = false; tab = "settings"; fillSettings(); window.scrollTo(0, 0);
   });
@@ -533,7 +696,6 @@
     e.target.value = "";
   });
 
-  if (!settings.key && settings.provider !== "custom") setTimeout(() => toast("Add your API key in Settings to start"), 600);
   if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
 
   showTokens();

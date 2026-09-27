@@ -1,6 +1,8 @@
-# Parola — Italian word notebook
+# Parola — Italian word notebook (free-lookup version)
 
-A small app for learning Italian as a Spanish speaker: dictionary lookups, a homework corrector, saved words and flashcards. It runs in the browser and installs on your phone and PC like an app. There's no server and no account: your words and API key stay on your device.
+A small app for learning Italian as a Spanish speaker: dictionary lookups, a homework corrector, saved words and flashcards.
+
+In this version, **lookups don't use AI**. They come from free sources with no API key: Wikizionario (definitions in Italian, synonyms, opposites and human-made translations), English Wiktionary (definitions in English) and MyMemory (machine translations and sentences in context), plus links to WordReference, Reverso, Treccani and Forvo. The AI is only used when you tap **Ask AI** on a word, and in the **Correct** tab. Practice never uses AI. The **Today** tab shows a new word every day (parola del giorno), also without AI. It first tries to use today's word from [Una parola al giorno](https://unaparolaalgiorno.it/) (CC BY-NC-SA 4.0, credited in the app); if the browser can't read that site, it uses the list in `words.js`. It runs in the browser and installs on your phone and PC like an app. There's no server and no account: your words and API key stay on your device.
 
 ## Put it online with GitHub Pages (free)
 
@@ -16,9 +18,9 @@ A small app for learning Italian as a Spanish speaker: dictionary lookups, a hom
 - **iPhone (Safari):** open the link, then tap **Share → Add to Home Screen**.
 - **PC (Chrome or Edge):** open the link and click the install icon in the address bar.
 
-## Connect an AI
+## Connect an AI (optional)
 
-Open **Settings** in the app, choose a provider, paste your API key and tap **Test**, then **Save**.
+Only needed for **Ask AI** and **Correct**. Open **Settings** in the app, choose a provider, paste your API key and tap **Test**, then **Save**.
 
 | Provider | Cost | Where to get a key |
 |---|---|---|

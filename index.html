@@ -3,12 +3,12 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Parola — Italian word notebook</title>
+<title>Parola — Italian word notebook (free lookup)</title>
 <meta name="theme-color" content="#13294B">
 <meta name="description" content="Italian dictionary, homework corrector and flashcards for Spanish speakers.">
 <link rel="manifest" href="manifest.webmanifest">
-<link rel="icon" href="icon.svg" type="image/svg+xml">
-<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="icon" href="icon.svg?v=2" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon-192.png?v=2">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="Parola">
@@ -30,9 +30,33 @@
       <input id="q" type="search" placeholder="Type an Italian word or phrase…" aria-label="Word to look up" enterkeyhint="search">
       <button class="btn" id="go" type="submit">Look up</button>
     </form>
-    <p class="hint">You can also type a Spanish word to find the Italian one.</p>
+    <div class="modes" role="group" aria-label="Language you're typing" style="margin-top:10px">
+      <button type="button" data-lang="it" aria-pressed="true">Italian word</button>
+      <button type="button" data-lang="es" aria-pressed="false">Spanish word</button>
+    </div>
+    <p class="hint">Lookups use free dictionaries, no AI. The AI is only used when you tap Ask AI or use Correct.</p>
     <div class="chips" id="tries"></div>
     <div id="out"></div>
+  </section>
+
+  <!-- WORD OF THE DAY -->
+  <section id="view-today" hidden>
+    <div class="today-head">
+      <div>
+        <div class="today-kicker">Parola del giorno</div>
+        <div class="meta" id="todayDate"></div>
+      </div>
+      <div class="today-btns">
+        <button class="btn ghost" id="todayBack" type="button">Today's</button>
+        <button class="btn ghost" id="todayAnother" type="button">Another</button>
+      </div>
+    </div>
+    <div id="todayUpag" style="margin-top:10px"></div>
+    <div id="todayOut"></div>
+    <div class="sec">
+      <h3 style="font-size:.95rem;margin:22px 0 8px">Previous days</h3>
+      <div class="chips" id="todayPast"></div>
+    </div>
   </section>
 
   <!-- CORRECT -->
@@ -59,6 +83,13 @@
 
   <!-- SETTINGS -->
   <section id="view-settings" hidden>
+    <div class="panel">
+      <h2>Free dictionaries</h2>
+      <label class="field"><span>Email for MyMemory (optional)</span>
+        <input id="mmEmail" type="email" autocomplete="email" placeholder="you@example.com">
+        <small>Free translations are limited to 5,000 characters a day. Adding an email raises it to 50,000. No sign-up needed. Tap Save below.</small>
+      </label>
+    </div>
     <div class="panel">
       <h2>AI connection</h2>
       <p class="meta">Parola uses your own API key. It stays on this device and is only sent to the provider you choose.</p>
@@ -93,7 +124,7 @@
         <button class="btn" id="saveSet" type="button">Save</button>
       </div>
     </div>
-    <p class="hint">Parola version 6</p>
+    <p class="hint">Parola free-lookup version 4</p>
   </section>
 
   <!-- PRACTICE -->
@@ -109,6 +140,7 @@
 <nav class="tabs" role="tablist">
   <div class="in">
     <button role="tab" data-tab="look" aria-selected="true">Look up</button>
+    <button role="tab" data-tab="today" aria-selected="false">Today</button>
     <button role="tab" data-tab="correct" aria-selected="false">Correct</button>
     <button role="tab" data-tab="saved" aria-selected="false">Saved</button>
     <button role="tab" data-tab="practice" aria-selected="false">Practice</button>
@@ -119,6 +151,8 @@
 <!-- Load order matters: settings and prompts first, then the app that uses them -->
 <script src="config.js"></script>
 <script src="prompts.js"></script>
+<script src="sources.js"></script>
+<script src="words.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

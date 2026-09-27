@@ -144,3 +144,11 @@ nav.tabs button[aria-selected="true"]::before{content:"";position:absolute;top:0
 .toast.show{opacity:1}
 [hidden]{display:none!important}
 @media (prefers-reduced-motion: reduce){*{transition:none!important}}
+
+/* word of the day */
+.today-head{display:flex;justify-content:space-between;align-items:flex-end;gap:12px;flex-wrap:wrap}
+.today-kicker{font-family:"Instrument Serif",Georgia,serif;font-size:1.7rem;line-height:1.1}
+.today-btns{display:flex;gap:8px}
+.today-btns .btn{padding:8px 12px;font-size:.9rem}
+#todayOut .entry{margin-top:14px}
+nav.tabs button{font-size:.85rem}
