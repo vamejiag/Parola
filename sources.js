@@ -63,21 +63,42 @@ async function mymemory(text, pair, signal, email) {
   return { main: clean(main), alternatives, context };
 }
 
-// Links that open in a new tab. Verbs get conjugation tables too.
+// Links that open in a new tab, in two groups. Verbs get conjugation tables too.
 function dictionaryLinks(word, isVerb) {
-  const w = encodeURIComponent(word.trim().toLowerCase());
-  const links = [
+  const raw = word.trim().toLowerCase();
+  const w = encodeURIComponent(raw);
+  const letter = raw.normalize("NFD").replace(/[\u0300-\u036f]/g, "").charAt(0).toUpperCase();
+  const dashed = encodeURIComponent(raw.replace(/\s+/g, "-"));
+  const dictionaries = [
+    ["Treccani", `https://www.treccani.it/vocabolario/${w}/`],
+    ["De Mauro", `https://dizionario.internazionale.it/parola/${w}`],
+    ["Sabatini Coletti", `https://dizionari.corriere.it/dizionario_italiano/${letter}/${raw.replace(/\s+/g, "_")}.shtml`],
+    ["Garzanti", `https://www.garzantilinguistica.it/ricerca/?q=${w}`],
+    ["Una parola al giorno", `https://unaparolaalgiorno.it/significato/${dashed}`],
+    ["Wikizionario", `https://it.wiktionary.org/wiki/${w}`]
+  ];
+  const context = [
     ["WordReference", `https://www.wordreference.com/ites/${w}`],
     ["Reverso Context", `https://context.reverso.net/traduccion/italiano-espanol/${w}`],
-    ["Treccani", `https://www.treccani.it/vocabolario/${w}/`],
-    ["Wikizionario", `https://it.wiktionary.org/wiki/${w}`],
     ["Pronunciation (Forvo)", `https://forvo.com/word/${w}/#it`]
   ];
-  if (isVerb) links.push(
+  if (isVerb) context.push(
     ["Conjugation (WordReference)", `https://www.wordreference.com/conj/itverbs.aspx?v=${w}`],
     ["Conjugation (Reverso)", `https://conjugator.reverso.net/conjugation-italian-verb-${w}.html`]
   );
-  return links;
+  return { dictionaries, context };
+}
+
+// Does Una parola al giorno have an article on this word? true / false / null (can't tell: site blocked the check).
+async function upagHasWord(word, signal) {
+  try {
+    const slug = encodeURIComponent(word.trim().toLowerCase().replace(/\s+/g, "-"));
+    const res = await fetch(`https://unaparolaalgiorno.it/significato/${slug}`, { signal });
+    if (res.status === 404) return false;
+    if (!res.ok) return null;
+    const html = await res.text();
+    return /significato/i.test(html) && !/non (è stata )?trovat/i.test(html);
+  } catch { return null; }
 }
 
 // ---- Wikizionario (Italian Wiktionary): definitions IN ITALIAN, synonyms, opposites,

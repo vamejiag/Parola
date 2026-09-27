@@ -229,17 +229,21 @@
         const t = await mymemory(w, "es|it", signal, settings.mmEmail);
         w = t.main.replace(/[.!?¡¿]/g, "").trim().toLowerCase() || w;
       }
-      const ck = "free2:" + w.toLowerCase();
+      const ck = "free3:" + w.toLowerCase();
       let d = cacheGet(ck);
       if (!d) {
         const [wz, wk, es, en, fr] = await Promise.all([
-          wikizionario(w, signal).catch(() => null),
-          wiktionary(w, signal).catch(() => []),
+          wikizionario(w, signal).catch(e => ({ status: "error", note: e?.message || "network" })),
+          wiktionary(w, signal).catch(e => ({ error: e?.message || "network" })),
           mymemory(w, "it|es", signal, settings.mmEmail),
           mymemory(w, "it|en", signal, settings.mmEmail).catch(() => ({ main: "" })),
           mymemory(w, "it|fr", signal, settings.mmEmail).catch(() => ({ main: "" }))
         ]);
-        d = { word: w, wz, wk, es, en: en.main, fr: fr.main };
+        const wkList = Array.isArray(wk) ? wk : [];
+        d = { word: w, wz: wz.data || null, wk: wkList, es, en: en.main, fr: fr.main,
+          status: { wz: wz.status === "ok" ? `found (${wz.via})` : wz.status === "none" ? (wz.note || "no entry") : `error: ${wz.note}`,
+                    wk: wk?.error ? `error: ${wk.error}` : wkList.length ? "found" : "no entry",
+                    mm: es.main ? "ok" : "no result" } };
         cachePut(ck, d);
       }
       renderFree(d, input.trim(), target);
@@ -325,8 +329,16 @@
         d.es.context.map(c => el("div", { class: "ex" }, el("div", { class: "it" }, c.it), el("div", { class: "es" }, c.tr)))) : null,
       el("div", { class: "sec" }, el("h3", {}, "More context"), extLinks(d.word, isVerb)),
       aiButton(d.word, !found || !tr.es.text),
-      el("p", { class: "hint", style: "margin-top:16px" }, "Sources: Wikizionario and Wiktionary (CC BY-SA), MyMemory. No AI tokens used."));
+      el("p", { class: "hint", style: "margin-top:16px" }, "Sources: Wikizionario and Wiktionary (CC BY-SA), MyMemory. No AI tokens used."),
+      d.status ? el("p", { class: "hint", style: "margin-top:4px;font-size:.8rem" },
+        `Wikizionario: ${d.status.wz}. Wiktionary: ${d.status.wk}. MyMemory: ${d.status.mm}.`) : null);
     $(target).replaceChildren(card);
+    upagHasWord(d.word).then(has => {
+      const link = card.querySelector('a[data-src="Una parola al giorno"]');
+      if (!link) return;
+      if (has === true) { link.textContent = "Una parola al giorno ★ has an article"; link.style.borderColor = "var(--lemon)"; }
+      else if (has === false) link.remove();
+    });
   }
 
   function normalize(d) {
@@ -344,9 +356,13 @@
   }
 
   function extLinks(word, isVerb) {
-    const links = dictionaryLinks(word, isVerb);
-    return el("div", { class: "ext" }, links.map(([t, u]) => el("a", { href: u, target: "_blank", rel: "noopener noreferrer" }, t)));
+    const { dictionaries, context } = dictionaryLinks(word, isVerb);
+    const group = (title, links) => el("div", { style: "margin-bottom:10px" },
+      el("div", { class: "meta", style: "margin:0 0 6px;font-size:.85rem" }, title),
+      el("div", { class: "ext" }, links.map(([t, u]) => el("a", { href: u, target: "_blank", rel: "noopener noreferrer", "data-src": t }, t))));
+    return el("div", {}, group("Italian dictionaries", dictionaries), group("Translations, context and conjugation", context));
   }
+
   const looksVerb = d => /\bverb/i.test(d.pos || "") || /(are|ere|ire|rsi|rre)$/.test((d.word || "").trim());
 
   function wordLinks(list) {
