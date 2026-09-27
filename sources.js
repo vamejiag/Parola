@@ -111,30 +111,84 @@ function cleanWikitext(t) {
 const wikiLinks = line => [...String(line).matchAll(/\[\[([^\]|#]+)(?:\|[^\]]*)?\]\]/g)].map(m => m[1].trim());
 
 async function wikizionario(word, signal) {
-  const get = async w => {
+  const api = async params => {
     const url = new URL("https://it.wiktionary.org/w/api.php");
-    Object.entries({ action: "query", prop: "revisions", rvprop: "content", rvslots: "main", titles: w,
-      format: "json", formatversion: "2", origin: "*" }).forEach(([k, v]) => url.searchParams.set(k, v));
+    Object.entries({ ...params, format: "json", formatversion: "2", origin: "*" }).forEach(([k, v]) => url.searchParams.set(k, v));
     const res = await fetch(url, { signal });
-    if (!res.ok) throw new Error("wikizionario " + res.status);
-    const page = (await res.json())?.query?.pages?.[0];
-    return page && !page.missing ? page.revisions?.[0]?.slots?.main?.content || "" : "";
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    return res.json();
   };
-  let text = await get(word.trim());
-  if (!text && word.trim() !== word.trim().toLowerCase()) text = await get(word.trim().toLowerCase());
-  return parseWikizionario(text);
+  const tryWord = async w => {
+    // 1) raw wiki code
+    const q = await api({ action: "query", prop: "revisions", rvprop: "content", rvslots: "main", titles: w, redirects: "1" });
+    const page = q?.query?.pages?.[0];
+    if (!page || page.missing) return { status: "none" };
+    const parsed = parseWikizionario(page.revisions?.[0]?.slots?.main?.content || "");
+    if (parsed?.sections.length) return { status: "ok", data: parsed, via: "wikitext" };
+    // 2) the rendered page, as a fallback when the wiki code has an unexpected format
+    const r = await api({ action: "parse", page: page.title || w, prop: "text", redirects: "1" });
+    const fromHtml = parseWikizionarioHTML(r?.parse?.text || "");
+    if (fromHtml?.sections.length) {
+      if (parsed) { fromHtml.trad = parsed.trad; if (!fromHtml.synonyms.length) fromHtml.synonyms = parsed.synonyms; }
+      return { status: "ok", data: fromHtml, via: "page" };
+    }
+    return parsed ? { status: "ok", data: parsed, via: "wikitext" } : { status: "none", note: "page found, no Italian entry" };
+  };
+  let r = await tryWord(word.trim());
+  if (r.status !== "ok" && word.trim() !== word.trim().toLowerCase()) r = await tryWord(word.trim().toLowerCase());
+  return r;
+}
+
+const WZ_POS_HTML = /^(sostantivo|verbo|aggettivo|avverbio|interiezione|preposizione|congiunzione|pronome|articolo|locuzione|espressione|forma)/i;
+function parseWikizionarioHTML(html) {
+  const doc = new DOMParser().parseFromString(String(html || ""), "text/html");
+  const root = doc.querySelector(".mw-parser-output") || doc.body;
+  const out = { sections: [], synonyms: [], antonyms: [], trad: { es: "", en: "", fr: "" } };
+  const headingOf = n => {
+    const h = /^H[1-6]$/.test(n.tagName) ? n : (n.classList?.contains("mw-heading") ? n.querySelector("h1,h2,h3,h4,h5,h6") : null);
+    return h ? { level: +h.tagName[1], text: (h.textContent || "").replace(/\[.*?\]/g, "").trim() } : null;
+  };
+  let inIt = false, cur = null, mode = null;
+  for (const n of root.children) {
+    const h = headingOf(n);
+    if (h) {
+      if (h.level <= 2) { if (inIt) break; inIt = /italiano/i.test(h.text); continue; }
+      if (!inIt) continue;
+      if (WZ_POS_HTML.test(h.text)) { cur = { pos: h.text.toLowerCase(), defs: [] }; out.sections.push(cur); mode = "pos"; }
+      else { mode = /sinonimi/i.test(h.text) ? "sin" : /contrari/i.test(h.text) ? "ant" : "other"; }
+      continue;
+    }
+    if (!inIt) continue;
+    if (mode === "pos" && cur && n.tagName === "OL") {
+      for (const li of n.children) {
+        if (li.tagName !== "LI") continue;
+        const c = li.cloneNode(true);
+        const examples = [...c.querySelectorAll("dl, ul")].map(x => x.textContent.replace(/\s+/g, " ").trim()).filter(Boolean);
+        c.querySelectorAll("dl, ul, sup").forEach(x => x.remove());
+        const text = c.textContent.replace(/\s+/g, " ").trim();
+        if (text) cur.defs.push({ text, examples: examples.slice(0, 2) });
+      }
+    } else if ((mode === "sin" || mode === "ant") && /^(UL|P|DL)$/.test(n.tagName)) {
+      const list = mode === "sin" ? out.synonyms : out.antonyms;
+      n.querySelectorAll("a").forEach(a => { const t = a.textContent.trim(); if (t && !/^\(/.test(t)) list.push(t); });
+    }
+  }
+  out.sections = out.sections.map(s => ({ ...s, defs: s.defs.slice(0, 5) })).filter(s => s.defs.length);
+  const uniq = a => [...new Set(a)].filter(x => x && x.length < 40).slice(0, 8);
+  out.synonyms = uniq(out.synonyms); out.antonyms = uniq(out.antonyms);
+  return out;
 }
 
 function parseWikizionario(text) {
   const lines = String(text || "").split("\n");
-  const start = lines.findIndex(l => /^==\s*\{\{-it-\}\}\s*==/.test(l.trim()));
+  const start = lines.findIndex(l => /^==\s*\{\{\s*-it-\s*\}\}\s*==/.test(l.trim()) || /^==\s*italiano\s*==$/i.test(l.trim()));
   if (start < 0) return null;
   const out = { sections: [], synonyms: [], antonyms: [], trad: { es: [], en: [], fr: [] } };
   let mode = null, cur = null;
   for (let i = start + 1; i < lines.length; i++) {
     const l = lines[i].trim();
-    if (/^==\s*\{\{-[^}]+-\}\}\s*==/.test(l)) break;          // next language
-    const h = l.match(/^\{\{-([a-z ]+)-(?:\|[^}]*)?\}\}/i);  // section header
+    if (/^==[^=].*==$/.test(l) && !/^===/.test(l)) break;       // next language
+    const h = l.replace(/^=+\s*|\s*=+$/g, "").match(/^\{\{\s*-([a-z ]+)-\s*(?:\|[^}]*)?\}\}/i);  // section header
     if (h) {
       const name = h[1].toLowerCase();
       if (WZ_POS[name]) { cur = { pos: WZ_POS[name], defs: [] }; out.sections.push(cur); mode = "pos"; }
